@@ -46,3 +46,7 @@ This project is licensed under the **MIT License**. See the `LICENSE` file for d
 The core C codebase and Win32 GUI implementation for this project were heavily generated using Google's **Gemini AI**. 
 
 My role in this project was as the project architect, prompt engineer, and tester—guiding the AI's output, defining the feature set, and testing the transpiler logic against physical Digispark hardware. Because this code is largely AI-generated, it is provided as Free and Open Source Software (FOSS) to benefit the community.
+
+## 📺 YouTube
+
+https://youtu.be/hyzvSi9E6LM
