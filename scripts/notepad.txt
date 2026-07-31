@@ -1,7 +1,8 @@
-defaultdelay 250
-keys(gui, r)
-string("notepad")
-key(enter)
-delay(1000)
-string("This payload was deployed via Digispark!")
-key(enter)
+defaultdelay 250   # set global default delay after each keyboard action to 250ms
+waitblink(3)       # loop blinking the red LED three times and wait 2 seconds, proceeding when the user presses the GPIO 2 wired button
+keys(gui, r)        # press [Windows] + [R] to open a Run dialog
+string("notepad")   # type notepad
+key(enter)          # press [Enter]
+delay(1000)                                          # wait 1 second
+string("This payload was deployed via Digispark!")   # type message into Notepad
+key(enter)                                           # press [Enter]
