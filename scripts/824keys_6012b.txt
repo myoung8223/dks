@@ -1,3 +1,4 @@
+# maximum script size example
 key(a)
 key(a)
 key(a)
