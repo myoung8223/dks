@@ -1,0 +1,12 @@
+defaultdelay 50
+delay(1000)
+keys(gui, r)
+string("cmd")
+key(enter)
+delay(500)
+string("powershell -Command "Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('Hello world')"")
+key(enter)
+delay(500)
+string("exit")
+key(enter)
+led(on)
