@@ -1,4 +1,4 @@
-# maximum script size example
+# Maximum script size example, typing 824 single keys, yielding a 6012 byte sketch.
 key(a)
 key(a)
 key(a)
