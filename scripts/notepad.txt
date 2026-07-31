@@ -1,0 +1,7 @@
+defaultdelay 250
+keys(gui, r)
+string("notepad")
+key(enter)
+delay(1000)
+string("This payload was deployed via Digispark!")
+key(enter)
