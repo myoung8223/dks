@@ -7,7 +7,7 @@ A lightweight, dark-mode Win32 IDE and transpiler for the Digispark (ATtiny85). 
 - **Dark Mode & Word Wrap:** Toggleable, and remembered between sessions via `settings.ini`.
 - **Simplified Scripting:** Case-insensitive commands for keystrokes, held modifiers, delays, and hardware control.
 - **Direct Flashing:** Integrated with `arduino-cli` to compile and upload payloads invisibly — no console windows pop up.
-- **Build Feedback:** After each compile, the sketch's flash and RAM usage are shown. If a payload won't fit, you get a clear "too large for flash" message instead of a generic error.
+- **Build Feedback:** After each compile, the sketch's flash and RAM usage are shown. Note that at around 90% flash use (6012 bytes) a script will not upload properly.
 - **Optimized Output:** Typed strings are kept in flash (PROGMEM, via `F()`) and streamed a byte at a time on the device, sparing the ATtiny85's 512 bytes of SRAM.
 - **Editor Niceties:** `Ctrl+A` select-all, plus robust paste that normalizes line endings and Unicode text pasted from editors like Notepad++.
 - **Hardware Support:** Built-in commands for the onboard LED and a physical "Wait" button on GPIO 2.
