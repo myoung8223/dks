@@ -6,3 +6,4 @@ key(enter)          # press [Enter]
 delay(1000)                                          # wait 1 second
 string("This payload was deployed via Digispark!")   # type message into Notepad
 key(enter)                                           # press [Enter]
+led(on)      # turn the red LED on to indicate the script is done running
