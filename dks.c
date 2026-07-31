@@ -15,7 +15,7 @@
 #include <string.h>
 
 // ============================================================================
-// --- MANUAL DEFINITIONS (Bypassing missing commdlg.h for TCC) ---
+// --- MANUAL DEFINITIONS (Bypassing missing commdlg.h & NLS for TCC) ---
 // ============================================================================
 typedef struct {
     DWORD        lStructSize;
@@ -36,7 +36,7 @@ typedef struct {
     WORD         nFileExtension;
     LPCSTR       lpstrDefExt;
     LPARAM       lCustData;
-    void* lpfnHook;
+    void*        lpfnHook;
     LPCSTR       lpTemplateName;
 } OPENFILENAME;
 
@@ -60,13 +60,17 @@ BOOL WINAPI GetSaveFileNameA(OPENFILENAME *lpofn);
 #define GetOpenFileName GetOpenFileNameA
 #define GetSaveFileName GetSaveFileNameA
 
-// ShellExecuteA lives in shell32; declare it manually in case the TCC winapi
-// headers omit it (same approach used for the file-dialog functions above).
-// NOTE: this requires linking shell32 -- add -lshell32 to the TCC command line.
+// ShellExecuteA lives in shell32
 HINSTANCE WINAPI ShellExecuteA(HWND, LPCSTR, LPCSTR, LPCSTR, LPCSTR, INT);
 #ifndef ShellExecute
 #define ShellExecute ShellExecuteA
 #endif
+
+// Unicode/ANSI String Conversion (missing in some TCC winapi header subsets)
+#ifndef CP_ACP
+#define CP_ACP 0
+#endif
+int WINAPI WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCSTR, LPBOOL);
 
 // ============================================================================
 // --- APPLICATION CONSTANTS & GLOBALS ---
@@ -87,7 +91,7 @@ HINSTANCE WINAPI ShellExecuteA(HWND, LPCSTR, LPCSTR, LPCSTR, LPCSTR, INT);
 #define IDC_ABOUT_CLOSE 2002
 
 // Application version string (shown in the About box; bump this on each release)
-#define APP_VERSION "17"
+#define APP_VERSION "18"
 
 // GitHub repository URL (shown in the About box and opened by the browser prompt)
 #define GITHUB_URL "https://github.com/myoung8223/dks"
@@ -103,6 +107,7 @@ HWND hEdit;                         // The main text editor window
 char currentFile[MAX_PATH] = "";    // Tracks the currently opened file path
 char iniPath[MAX_PATH] = "";        // Tracks the path to the settings.ini file
 HBRUSH hEditBkBrush = NULL;         // Brush for Dark Mode background
+WNDPROC oldEditProc = NULL;         // Subclass window procedure pointer for the editor
 
 int isDarkMode = 0;                 // Dark mode toggle state
 int isWordWrap = 1;                 // Word wrap toggle state
@@ -174,8 +179,6 @@ void fputs_escaped(const char *src, FILE *out) {
 // --- TRANSPILER ENGINE ---
 // ============================================================================
 
-// Converts the custom payload script into a valid Arduino C++ sketch.
-// Returns 1 on success, 0 on syntax error or file error.
 int transpile(const char* inputFilename) {
     int current_mod = 0;
     int default_delay = 0;
@@ -187,15 +190,7 @@ int transpile(const char* inputFilename) {
     if (!in)  { if (out) fclose(out); return 0; }
     if (!out) { fclose(in); return 0; }
 
-    // --- Write Arduino Sketch Header ---
     fprintf(out, "#include \"DigiKeyboard.h\"\n\n");
-    
-    // Inject USB HID key constants, but ONLY where the active core's library
-    // doesn't already provide them. The original Digistump core omits these
-    // (which is why they were injected); ArminJo's fork bundles a keylayouts.h
-    // that defines them, so guarding with #ifndef defers to the library there
-    // and avoids a wall of "redefined" warnings, while still supplying them on
-    // cores that lack them.
     fprintf(out, "// --- USB HID Constants (defined only if the core omits them) ---\n");
     fprintf(out, "#ifndef KEY_ENTER\n#define KEY_ENTER 40\n#endif\n");
     fprintf(out, "#ifndef KEY_ESC\n#define KEY_ESC 41\n#endif\n");
@@ -211,9 +206,6 @@ int transpile(const char* inputFilename) {
     fprintf(out, "#ifndef KEY_DOWN\n#define KEY_DOWN 81\n#endif\n");
     fprintf(out, "#ifndef KEY_UP\n#define KEY_UP 82\n#endif\n\n");
 
-    // --- INJECT HELPER FUNCTIONS ---
-    
-    // Helper 1: Prevents dropped keystrokes by giving the OS time to process (PROGMEM optimized)
     fprintf(out, "// Helper: Rate-limits typing to prevent dropped keystrokes (PROGMEM optimized)\n");
     fprintf(out, "void safePrint(const __FlashStringHelper* text) {\n");
     fprintf(out, "  const char *p = (const char *)text;\n");
@@ -225,80 +217,69 @@ int transpile(const char* inputFilename) {
     fprintf(out, "  }\n");
     fprintf(out, "}\n\n");
 
-    // Helper 2: Blinks N times, then pauses 2s, repeating until Pin 2 goes LOW
     fprintf(out, "// Helper: Blinks N times, then pauses 2s, repeating until Pin 2 goes LOW\n");
     fprintf(out, "void waitForButtonBlink(int count) {\n");
     fprintf(out, "  while(digitalRead(2) == HIGH) {\n");
     fprintf(out, "    for(int i=0; i < count; i++) {\n");
     fprintf(out, "      digitalWrite(1, HIGH); DigiKeyboard.delay(200);\n");
     fprintf(out, "      digitalWrite(1, LOW);  DigiKeyboard.delay(200);\n");
-    fprintf(out, "      if(digitalRead(2) == LOW) return; // Exit if button pressed\n");
+    fprintf(out, "      if(digitalRead(2) == LOW) return;\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    // 2s pause, calling update() to keep USB alive\n");
     fprintf(out, "    for(int j=0; j < 40; j++) {\n");
     fprintf(out, "      DigiKeyboard.delay(50); DigiKeyboard.update();\n");
     fprintf(out, "      if(digitalRead(2) == LOW) return;\n");
     fprintf(out, "    }\n");
     fprintf(out, "  }\n");
-    fprintf(out, "  DigiKeyboard.delay(200); // Debounce\n");
+    fprintf(out, "  DigiKeyboard.delay(200);\n");
     fprintf(out, "}\n\n");
     
-    // Start Arduino standard functions & initialize hardware pins
     fprintf(out, "void setup() {\n");
-    fprintf(out, "  DigiKeyboard.sendKeyStroke(0); // Clear OS buffer\n");
-    fprintf(out, "  DigiKeyboard.delay(500);       // Wait for OS to mount virtual USB\n");
-    fprintf(out, "  pinMode(1, OUTPUT); // Built-in LED\n");
-    fprintf(out, "  pinMode(2, INPUT_PULLUP); // Wait button (Pin 2 to GND)\n");
+    fprintf(out, "  DigiKeyboard.sendKeyStroke(0);\n");
+    fprintf(out, "  DigiKeyboard.delay(500);\n");
+    fprintf(out, "  pinMode(1, OUTPUT);\n");
+    fprintf(out, "  pinMode(2, INPUT_PULLUP);\n");
     fprintf(out, "}\n\nvoid loop() {\n");
     fprintf(out, "  DigiKeyboard.update();\n  DigiKeyboard.delay(3000);\n\n");
 
-    // --- Parse Input Script Line-by-Line ---
     char line[256];
     while (fgets(line, sizeof(line), in)) {
         char temp[256];
         strcpy(temp, line);
         
-        // --- STRIP OUT COMMENTS (Quote-Aware) ---
         int in_quotes = 0;
         for (int i = 0; temp[i] != '\0'; i++) {
-            if (temp[i] == '\"') in_quotes = !in_quotes; // Toggle quote state
+            if (temp[i] == '\"') in_quotes = !in_quotes;
             if (temp[i] == '#' && !in_quotes) {
-                temp[i] = '\0'; // Only terminate if NOT in a string
+                temp[i] = '\0';
                 break;
             }
         }
 
         char *trimmed = clean_str(temp);
-        if (trimmed[0] == '\0') continue; // Skip empty lines
+        if (trimmed[0] == '\0') continue;
 
-        // --- CREATE AN ALL-CAPS VERSION FOR PARSING ---
         char cmd[256];
         strcpy(cmd, trimmed);
         _strupr(cmd); 
 
         int is_keyboard_action = 0;
 
-        // Command: DEFAULTDELAY <ms>
         if (strncmp(cmd, "DEFAULTDELAY", 12) == 0) {
             sscanf(cmd, "DEFAULTDELAY %d", &default_delay);
             continue;
         }
 
-        // Command: string("...")
         if (strncmp(cmd, "STRING(", 7) == 0) {
-            // Search in 'trimmed' (the clean, comment-free version)
             char *start = strchr(trimmed, '\"');
             char *end = strrchr(trimmed, '\"');
 
             if (start && end && start != end) {
                 *end = '\0';
-                // RETROFIT: Use the new safePrint helper instead of DigiKeyboard.print.
-                // Escape the payload so backslashes/quotes survive into the C++ literal.
                 fputs("  safePrint(F(\"", out);
                 fputs_escaped(start + 1, out);
                 fputs("\"));\n", out);
                 is_keyboard_action = 1;
-                *end = '\"'; // Restore it for consistency
+                *end = '\"';
             } else {
                 char errorMsg[512];
                 sprintf(errorMsg, "Syntax error (missing quotes):\n\n%s", trimmed);
@@ -306,8 +287,6 @@ int transpile(const char* inputFilename) {
                 fclose(in); fclose(out); return 0; 
             }
         }
-
-        // Command: keydown(...) 
         else if (strncmp(cmd, "KEYDOWN(", 8) == 0) {
             char k1[32];
             if (sscanf(cmd, "KEYDOWN(%31[^)])", k1) >= 1) {
@@ -325,13 +304,11 @@ int transpile(const char* inputFilename) {
                 is_keyboard_action = 0; 
             }
         }
-        // Command: keyup()
         else if (strncmp(cmd, "KEYUP()", 7) == 0) {
             current_mod = 0; 
             fprintf(out, "  DigiKeyboard.sendKeyPress(0, 0);\n");
             is_keyboard_action = 1;
         }        
-        // Command: keys(...) 
         else if (strncmp(cmd, "KEYS(", 5) == 0) {
             char inner[128] = {0};
             if (sscanf(cmd, "KEYS(%127[^)])", inner) == 1) {
@@ -355,75 +332,48 @@ int transpile(const char* inputFilename) {
                 is_keyboard_action = 1;
             }
         }
-
-		/*
-        // Command: key(...) [Legacy fallback]
-        else if (strncmp(cmd, "KEY(", 4) == 0) {
-            char k1[32];
-            if (sscanf(cmd, "KEY(%[^)])", k1) >= 1) {
-                fprintf(out, "  DigiKeyboard.sendKeyStroke(KEY_%s);\n", clean_str(k1));
-                is_keyboard_action = 1;
-            }
-        } 
-		*/
-		
-		// Command: key(...) [Legacy fallback]
         else if (strncmp(cmd, "KEY(", 4) == 0) {
             char k1[32];
             if (sscanf(cmd, "KEY(%31[^)])", k1) >= 1) {
                 if (current_mod > 0) {
-                    // Send the key WITH the held modifiers
                     fprintf(out, "  DigiKeyboard.sendKeyPress(KEY_%s, %d);\n", clean_str(k1), current_mod);
-                    fprintf(out, "  DigiKeyboard.delay(50);\n"); // Brief tap
-                    // Release the key, but KEEP holding the modifiers
+                    fprintf(out, "  DigiKeyboard.delay(50);\n");
                     fprintf(out, "  DigiKeyboard.sendKeyPress(0, %d);\n", current_mod);
                 } else {
-                    // Normal behavior if no modifiers are currently held
                     fprintf(out, "  DigiKeyboard.sendKeyStroke(KEY_%s);\n", clean_str(k1));
                 }
                 is_keyboard_action = 1;
             }
-        }		
-		
-        // Command: delay(<ms>)
+        }       
         else if (strncmp(cmd, "DELAY(", 6) == 0) {
             int ms;
             if (sscanf(cmd, "DELAY(%d)", &ms) >= 1) {
                 fprintf(out, "  DigiKeyboard.delay(%d);\n", ms);
             }
         }
-        // Command: WAITBLINK(x)
         else if (strncmp(cmd, "WAITBLINK(", 10) == 0) {
             int blinks = 0;
             if (sscanf(cmd, "WAITBLINK(%d)", &blinks) >= 1) {
                 fprintf(out, "  waitForButtonBlink(%d);\n", blinks);
             }
         }
-        // Command: LED(ON)
         else if (strcmp(cmd, "LED(ON)") == 0) {
             fprintf(out, "  digitalWrite(1, HIGH);\n");
         }
-        // Command: LED(OFF)
         else if (strcmp(cmd, "LED(OFF)") == 0) {
             fprintf(out, "  digitalWrite(1, LOW);\n");
         }
-        // Command: WAIT()
         else if (strcmp(cmd, "WAIT()") == 0) {
             fprintf(out, "  while(digitalRead(2) == HIGH) { DigiKeyboard.update(); DigiKeyboard.delay(50); }\n");
             fprintf(out, "  DigiKeyboard.delay(200);\n");
         }
-        // CATCH-ALL: Syntax error / Unknown command!
         else {
             char errorMsg[512];
             sprintf(errorMsg, "The transpiler encountered a syntax error and doesn't understand this line:\n\n%s", trimmed);
             MessageBox(NULL, errorMsg, "Transpiler Error", MB_ICONERROR);
-            
-            fclose(in); 
-            fclose(out); 
-            return 0; // Abort build
+            fclose(in); fclose(out); return 0; 
         }
 
-        // Apply DEFAULTDELAY if an actual keyboard action occurred
         trigger_delay:
         if (is_keyboard_action && default_delay > 0) {
             fprintf(out, "  DigiKeyboard.delay(%d); // Auto-delay\n", default_delay);
@@ -431,7 +381,6 @@ int transpile(const char* inputFilename) {
     }
 
     fprintf(out, "\n  for(;;){ DigiKeyboard.delay(1000); }\n}\n");
-    
     fclose(in); 
     fclose(out);
     return 1;
@@ -441,76 +390,81 @@ int transpile(const char* inputFilename) {
 // --- FILE & PROCESS HELPERS ---
 // ============================================================================
 
-// Grabs all text from the Editor window and saves it to a file
 void SaveFile(HWND hwnd, const char* filename) {
     int len = GetWindowTextLength(hEdit);
     if (len > 0) {
         char* buffer = (char*)malloc(len + 1);
         GetWindowText(hEdit, buffer, len + 1);
-        FILE* fp = fopen(filename, "w");
+        FILE* fp = fopen(filename, "wb");
         if (fp) {
-            fputs(buffer, fp);
+            fwrite(buffer, 1, len, fp);
             fclose(fp);
         }
         free(buffer);
     } else {
-        // Create empty file if no text
-        FILE* fp = fopen(filename, "w");
+        FILE* fp = fopen(filename, "wb");
         if (fp) fclose(fp);
     }
 }
 
-// Reads a file from disk and populates the Editor window
 void LoadFile(HWND hwnd, const char* filename) {
     FILE* fp = fopen(filename, "rb");
     if (fp) {
         fseek(fp, 0, SEEK_END);
         long size = ftell(fp);
         rewind(fp);
+        
         char* buffer = (char*)malloc(size + 1);
-        fread(buffer, 1, size, fp);
-        buffer[size] = '\0';
+        size_t bytesRead = fread(buffer, 1, size, fp);
+        buffer[bytesRead] = '\0';
         fclose(fp);
-        SetWindowText(hEdit, buffer);
+
+        char* normalized = (char*)malloc(bytesRead * 2 + 1);
+        int j = 0;
+        size_t i = 0;
+        while (i < bytesRead) {
+            if (buffer[i] == '\r' || buffer[i] == '\n') {
+                while (i < bytesRead && (buffer[i] == '\r' || buffer[i] == '\n')) {
+                    i++;
+                }
+                normalized[j++] = '\r';
+                normalized[j++] = '\n';
+            } else {
+                normalized[j++] = buffer[i++];
+            }
+        }
+        normalized[j] = '\0';
+
+        SetWindowText(hEdit, normalized);
         free(buffer);
+        free(normalized);
     }
 }
 
-// Executes a CLI tool completely invisibly and waits for it to finish.
-// Returns the exit code of the program (0 usually means success).
 int RunCommandHidden(const char* cmd) {
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
-    
     ZeroMemory(&si, sizeof(si));
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE; // Magic flag to hide the console window
-    
+    si.wShowWindow = SW_HIDE;
     ZeroMemory(&pi, sizeof(pi));
-
-    // CreateProcess requires a modifiable char buffer for the command
+    
     char cmdBuffer[1024];
     strncpy(cmdBuffer, cmd, sizeof(cmdBuffer) - 1);
     cmdBuffer[sizeof(cmdBuffer) - 1] = '\0';
 
-    // CREATE_NO_WINDOW prevents a console from even being allocated
     if (CreateProcess(NULL, cmdBuffer, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, INFINITE); // Block until complete
-        
+        WaitForSingleObject(pi.hProcess, INFINITE);
         DWORD exitCode;
         GetExitCodeProcess(pi.hProcess, &exitCode);
-        
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         return (int)exitCode;
     }
-    return -1; // Failed to launch process
+    return -1;
 }
 
-// Copies the line starting at the first occurrence of 'needle' into 'dest',
-// stopping at CR/LF. Returns 1 if found, 0 otherwise. Used to pull specific
-// report lines (e.g. "Sketch uses ...") out of captured build output.
 int extract_line(const char* src, const char* needle, char* dest, int destSize) {
     const char* p = strstr(src, needle);
     if (!p) { if (destSize > 0) dest[0] = '\0'; return 0; }
@@ -523,20 +477,13 @@ int extract_line(const char* src, const char* needle, char* dest, int destSize) 
     return 1;
 }
 
-// Like RunCommandHidden, but also captures the child's stdout+stderr so the
-// caller can read arduino-cli's messages (flash usage on success, linker
-// errors on failure). Output is redirected to a temp file rather than an
-// anonymous pipe to avoid the classic pipe-buffer deadlock on verbose builds.
-// Returns the child's exit code, or -1 if the process could not be launched.
 int RunCommandCapture(const char* cmd, char* outBuf, int outBufSize) {
     if (outBuf && outBufSize > 0) outBuf[0] = '\0';
 
-    // Build a unique temp file path for the child to write into
     char tmpDir[MAX_PATH], tmpFile[MAX_PATH];
     GetTempPath(MAX_PATH, tmpDir);
     if (!GetTempFileName(tmpDir, "dig", 0, tmpFile)) return -1;
 
-    // The file handle must be inheritable so the child process can use it
     SECURITY_ATTRIBUTES sa;
     ZeroMemory(&sa, sizeof(sa));
     sa.nLength = sizeof(sa);
@@ -552,9 +499,9 @@ int RunCommandCapture(const char* cmd, char* outBuf, int outBufSize) {
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
     si.wShowWindow = SW_HIDE;
-    si.hStdInput  = NULL;   // arduino-cli compile/upload does not read stdin
-    si.hStdOutput = hFile;  // capture the flash-usage report
-    si.hStdError  = hFile;  // capture linker/overflow errors too
+    si.hStdInput  = NULL;
+    si.hStdOutput = hFile;
+    si.hStdError  = hFile;
     ZeroMemory(&pi, sizeof(pi));
 
     char cmdBuffer[1024];
@@ -562,7 +509,6 @@ int RunCommandCapture(const char* cmd, char* outBuf, int outBufSize) {
     cmdBuffer[sizeof(cmdBuffer) - 1] = '\0';
 
     int exitCode = -1;
-    // NOTE: bInheritHandles MUST be TRUE here so the child inherits hFile
     if (CreateProcess(NULL, cmdBuffer, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
         WaitForSingleObject(pi.hProcess, INFINITE);
         DWORD dwExit;
@@ -572,15 +518,11 @@ int RunCommandCapture(const char* cmd, char* outBuf, int outBufSize) {
         CloseHandle(pi.hThread);
     }
 
-    CloseHandle(hFile); // release our write handle before reading the file back
+    CloseHandle(hFile);
 
     if (outBuf && outBufSize > 0) {
         FILE* fp = fopen(tmpFile, "rb");
         if (fp) {
-            // The size report ("Sketch uses ...") is printed LAST, and a noisy
-            // build can emit far more than outBufSize of warnings before it.
-            // So keep the TAIL of the output: if the file is larger than the
-            // buffer, seek to the final (outBufSize-1) bytes rather than the head.
             fseek(fp, 0, SEEK_END);
             long fsize = ftell(fp);
             long want  = (long)outBufSize - 1;
@@ -595,8 +537,101 @@ int RunCommandCapture(const char* cmd, char* outBuf, int outBufSize) {
         }
     }
 
-    DeleteFile(tmpFile); // clean up the temp file
+    DeleteFile(tmpFile);
     return exitCode;
+}
+
+// ============================================================================
+// --- EDITOR SUBCLASS HOOK (Robust Clipboard Normalization) ---
+// ============================================================================
+
+// Helper to safely normalize and inject text into the ANSI Edit Control
+void InsertNormalizedText(HWND hwnd, const char* text) {
+    if (!text) return;
+    size_t len = strlen(text);
+    char* normalized = (char*)malloc(len * 2 + 1);
+    size_t j = 0;
+    
+    for (size_t i = 0; i < len; i++) {
+        // Handle \r (Mac), \n (Unix), and \r\n (Windows) universally
+        if (text[i] == '\r') {
+            normalized[j++] = '\r';
+            normalized[j++] = '\n';
+            if (text[i + 1] == '\n') i++; // Skip paired \n
+        } else if (text[i] == '\n') {
+            normalized[j++] = '\r';
+            normalized[j++] = '\n';
+        } else {
+            normalized[j++] = text[i];
+        }
+    }
+    normalized[j] = '\0';
+    
+    // Using SendMessageA ensures the ANSI control processes it correctly
+    SendMessageA(hwnd, EM_REPLACESEL, TRUE, (LPARAM)normalized);
+    free(normalized);
+}
+
+LRESULT CALLBACK EditSubProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // ------------------------------------------------------------------------
+    // Intercept Ctrl+A for "Select All"
+    // ------------------------------------------------------------------------
+    if (msg == WM_KEYDOWN) {
+        if (wParam == 'A' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+            SendMessage(hwnd, EM_SETSEL, 0, -1);
+            return 0; 
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Suppress the system "ding" sound on WM_CHAR for Ctrl+A
+    // ------------------------------------------------------------------------
+    if (msg == WM_CHAR) {
+        if ((GetKeyState(VK_CONTROL) & 0x8000) && (wParam == 1 || wParam == 'a' || wParam == 'A')) {
+            return 0;
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Custom Paste Handling (Robust Clipboard Normalization)
+    // ------------------------------------------------------------------------
+    if (msg == WM_PASTE) {
+        if (OpenClipboard(hwnd)) {
+            // Priority 1: CF_UNICODETEXT (Notepad++, Web Browsers, VS Code)
+            if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+                HANDLE hClip = GetClipboardData(CF_UNICODETEXT);
+                if (hClip) {
+                    WCHAR* clipText = (WCHAR*)GlobalLock(hClip);
+                    if (clipText) {
+                        int ansiLen = WideCharToMultiByte(CP_ACP, 0, clipText, -1, NULL, 0, NULL, NULL);
+                        if (ansiLen > 0) {
+                            char* ansiText = (char*)malloc(ansiLen);
+                            WideCharToMultiByte(CP_ACP, 0, clipText, -1, ansiText, ansiLen, NULL, NULL);
+                            InsertNormalizedText(hwnd, ansiText);
+                            free(ansiText);
+                        }
+                        GlobalUnlock(hClip);
+                    }
+                }
+            }
+            // Priority 2: Standard CF_TEXT Fallback
+            else if (IsClipboardFormatAvailable(CF_TEXT)) {
+                HANDLE hClip = GetClipboardData(CF_TEXT);
+                if (hClip) {
+                    char* clipText = (char*)GlobalLock(hClip);
+                    if (clipText) {
+                        InsertNormalizedText(hwnd, clipText);
+                        GlobalUnlock(hClip);
+                    }
+                }
+            }
+            CloseClipboard();
+            return 0; // Handled paste message completely
+        }
+    }
+    
+    // Pass everything else to the original Edit control procedure
+    return CallWindowProc(oldEditProc, hwnd, msg, wParam, lParam);
 }
 
 // Recreates the Edit control to toggle styles like Word Wrap
@@ -618,6 +653,8 @@ void RecreateEditor(HWND hwndParent) {
                            0, 0, 0, 0, hwndParent, NULL, GetModuleHandle(NULL), NULL);
     
     SendMessage(hEdit, WM_SETFONT, (WPARAM)hCurrentFont, TRUE);
+    oldEditProc = (WNDPROC)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)EditSubProc);
+
     DestroyWindow(hOld);
 
     RECT rc; GetClientRect(hwndParent, &rc);
@@ -626,17 +663,12 @@ void RecreateEditor(HWND hwndParent) {
 }
 
 // ============================================================================
-// --- ABOUT DIALOG (custom window, so we control button labels & the chime) ---
+// --- ABOUT DIALOG ---
 // ============================================================================
 
-// A standard MessageBox can't relabel its buttons, and its MB_ICON* flags play
-// a system sound on open. So the About box is a small custom window instead:
-// arbitrary button text ("Visit GitHub Link" / "Close") and no sound.
 LRESULT CALLBACK AboutWndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            // Fonts are created once and reused for the life of the process.
-            // Segoe UI gives a modern look versus the dated default GUI font.
             static HFONT hTitleFont = NULL, hBodyFont = NULL;
             if (!hBodyFont)
                 hBodyFont = CreateFont(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -647,14 +679,12 @@ LRESULT CALLBACK AboutWndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
                     ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                     DEFAULT_QUALITY, DEFAULT_PITCH | FF_SWISS, "Segoe UI");
 
-            // Bold title on its own line
             HWND hTitle = CreateWindow("STATIC",
                 "Digispark Keyboard Scripter IDE",
                 WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX,
                 22, 18, 406, 26, hDlg, NULL, GetModuleHandle(NULL), NULL);
             SendMessage(hTitle, WM_SETFONT, (WPARAM)hTitleFont, TRUE);
 
-            // Body text. SS_NOPREFIX makes '&' render literally (no mnemonic underline).
             HWND hText = CreateWindow("STATIC",
                 "Version " APP_VERSION "\n\n"
                 "Creator & Project Lead:\n"
@@ -693,7 +723,7 @@ LRESULT CALLBACK AboutWndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
             break;
 
         case WM_CLOSE:
-            DestroyWindow(hDlg); // Close button / title-bar X -- must NOT quit the app
+            DestroyWindow(hDlg);
             break;
 
         default:
@@ -702,7 +732,6 @@ LRESULT CALLBACK AboutWndProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
-// Creates and shows the About dialog, centered over the parent window.
 void ShowAboutDialog(HWND hParent) {
     int w = 450, h = 340;
     RECT rp;
@@ -725,7 +754,6 @@ void ShowAboutDialog(HWND hParent) {
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            // 1. Build the Application Menus
             HMENU hMenu = CreateMenu();
             HMENU hFileMenu = CreatePopupMenu();
             HMENU hBuildMenu = CreatePopupMenu();
@@ -748,7 +776,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             SetMenu(hwnd, hMenu);
 
-            // 2. Create the Text Editor Control
             DWORD editStyle = WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN;
             if (!isWordWrap) editStyle |= ES_AUTOHSCROLL | WS_HSCROLL;
 
@@ -756,10 +783,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 editStyle,
                 0, 0, 0, 0, hwnd, NULL, GetModuleHandle(NULL), NULL);
             
-            // Brush for Dark Mode
+            // Subclass the edit control to handle custom pasting logic
+            oldEditProc = (WNDPROC)SetWindowLongPtr(hEdit, GWLP_WNDPROC, (LONG_PTR)EditSubProc);
+
             hEditBkBrush = CreateSolidBrush(RGB(30, 30, 30));
 
-            // 3. Set a monospaced font for coding
             HFONT hFont = CreateFont(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, 
                                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, 
                                      DEFAULT_PITCH | FF_SWISS, "Consolas");
@@ -770,24 +798,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_CTLCOLOREDIT: {
             HDC hdc = (HDC)wParam;
             if (isDarkMode) {
-                SetTextColor(hdc, RGB(220, 220, 220)); // Off-white text
-                SetBkColor(hdc, RGB(30, 30, 30));      // Dark gray background
+                SetTextColor(hdc, RGB(220, 220, 220));
+                SetBkColor(hdc, RGB(30, 30, 30));
                 return (INT_PTR)hEditBkBrush;
             } else {
-                SetTextColor(hdc, RGB(0, 0, 0));       // Black text
-                SetBkColor(hdc, RGB(255, 255, 255));   // White background
+                SetTextColor(hdc, RGB(0, 0, 0));
+                SetBkColor(hdc, RGB(255, 255, 255));
                 return (INT_PTR)GetStockObject(WHITE_BRUSH);
             }
         }
 
         case WM_SIZE: {
-            // Automatically resize the text editor to fill the parent window
             MoveWindow(hEdit, 0, 0, LOWORD(lParam), HIWORD(lParam), TRUE);
             break;
         }
 
         case WM_COMMAND: {
-            // Handle Menu Clicks
             switch (LOWORD(wParam)) {
                 
                 case IDM_NEW:
@@ -819,7 +845,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (strlen(currentFile) > 0) {
                         SaveFile(hwnd, currentFile);
                     } else {
-                        // If there is no file opened/saved yet, trigger Save As logic
                         SendMessage(hwnd, WM_COMMAND, IDM_SAVE_AS, 0);
                     }
                     break;
@@ -862,21 +887,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     break;
 
                 case IDM_FLASH: {
-                    // Step A: Save current editor text to a temp file
                     SaveFile(hwnd, "temp_payload.txt");
                     
-                    // Step B: Transpile script to Arduino sketch
                     if (transpile("temp_payload.txt")) {
-                        
-                        // Step C: Compile sketch via arduino-cli, capturing its output
                         char buildOut[8192];
                         int compileStatus = RunCommandCapture(
                             "arduino-cli compile --config-file arduino-cli.yaml --fqbn digistump:avr:digispark-tiny sketch",
                             buildOut, sizeof(buildOut));
                         
                         if (compileStatus != 0) {
-                            // Distinguish "too big for flash" from an ordinary syntax error.
-                            // Linker wording varies by binutils version, so match a few phrases.
                             int tooBig = (strstr(buildOut, "overflowed") != NULL)
                                       || (strstr(buildOut, "will not fit in region") != NULL)
                                       || (strstr(buildOut, "not within region") != NULL);
@@ -896,7 +915,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             break; 
                         }
                         
-                        // Step D: Report flash/RAM usage, then inform user to plug in hardware
                         char sketchLine[256] = "", ramLine[256] = "";
                         extract_line(buildOut, "Sketch uses", sketchLine, sizeof(sketchLine));
                         extract_line(buildOut, "Global variables", ramLine, sizeof(ramLine));
@@ -909,7 +927,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                             ramLine[0]    ? ramLine    : "");
                         MessageBox(hwnd, okMsg, "Ready to Flash", MB_OK | MB_ICONINFORMATION);
                         
-                        // Step E: Upload firmware via arduino-cli (Micronucleus)
                         int uploadStatus = RunCommandHidden("arduino-cli upload --config-file arduino-cli.yaml --fqbn digistump:avr:digispark-tiny sketch");
                         
                         if (uploadStatus != 0) {
@@ -928,9 +945,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY:
-            SaveSettings(); // Save user preferences before closing
-            if (hEditBkBrush) DeleteObject(hEditBkBrush); // Clean up GDI object
-            PostQuitMessage(0); // Exit application safely
+            SaveSettings();
+            if (hEditBkBrush) DeleteObject(hEditBkBrush);
+            PostQuitMessage(0);
             break;
 
         default:
@@ -943,7 +960,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 // --- APPLICATION ENTRY POINT ---
 // ============================================================================
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-    // Initialize file path and load preferences before building the UI
     InitIniPath();
     LoadSettings();
 
@@ -956,7 +972,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     RegisterClass(&wc);
 
-    // Register the About dialog's window class
     WNDCLASS wcAbout = {0};
     wcAbout.lpfnWndProc   = AboutWndProc;
     wcAbout.hInstance     = hInstance;
@@ -965,14 +980,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wcAbout.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     RegisterClass(&wcAbout);
 
-    // Create the Main Window
     HWND hwnd = CreateWindowEx(0, "DigiIDEClass", "Digispark Keyboard Scripter IDE - Untitled",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         NULL, NULL, hInstance, NULL);
 
     ShowWindow(hwnd, nCmdShow);
 
-    // Main Message Pump
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
