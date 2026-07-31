@@ -91,7 +91,7 @@ int WINAPI WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCSTR, LP
 #define IDC_ABOUT_CLOSE 2002
 
 // Application version string (shown in the About box; bump this on each release)
-#define APP_VERSION "18"
+#define APP_VERSION "19"
 
 // GitHub repository URL (shown in the About box and opened by the browser prompt)
 #define GITHUB_URL "https://github.com/myoung8223/dks"
@@ -420,15 +420,20 @@ void LoadFile(HWND hwnd, const char* filename) {
         fclose(fp);
 
         char* normalized = (char*)malloc(bytesRead * 2 + 1);
-        int j = 0;
+        size_t j = 0;
         size_t i = 0;
         while (i < bytesRead) {
-            if (buffer[i] == '\r' || buffer[i] == '\n') {
-                while (i < bytesRead && (buffer[i] == '\r' || buffer[i] == '\n')) {
-                    i++;
-                }
+            // Normalize each line break to a single \r\n. Unlike a run-consuming
+            // loop, this treats \r\n as ONE break, and lone \r or \n as one each,
+            // so consecutive breaks (blank lines) are preserved rather than merged.
+            if (buffer[i] == '\r') {
                 normalized[j++] = '\r';
                 normalized[j++] = '\n';
+                i += (i + 1 < bytesRead && buffer[i + 1] == '\n') ? 2 : 1; // eat paired \n
+            } else if (buffer[i] == '\n') {
+                normalized[j++] = '\r';
+                normalized[j++] = '\n';
+                i += 1;
             } else {
                 normalized[j++] = buffer[i++];
             }
