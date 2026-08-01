@@ -7,39 +7,25 @@ A lightweight, dark-mode Win32 IDE and transpiler for the Digispark (ATtiny85). 
 - **Dark Mode & Word Wrap:** Toggleable, and remembered between sessions via `settings.ini`.
 - **Simplified Scripting:** Case-insensitive commands for keystrokes, held modifiers, delays, and hardware control.
 - **Direct Flashing:** Integrated with `arduino-cli` to compile and upload payloads invisibly — no console windows pop up.
-- **Build Feedback:** After each compile, the sketch's flash and RAM usage are shown. Note that at around 90% flash use (6012 bytes) a script will not upload properly.
+- **Build Feedback:** After each compile, the sketch's flash and RAM usage are shown.
 - **Optimized Output:** Typed strings are kept in flash (PROGMEM, via `F()`) and streamed a byte at a time on the device, sparing the ATtiny85's 512 bytes of SRAM.
 - **Editor Niceties:** `Ctrl+A` select-all, plus robust paste that normalizes line endings and Unicode text pasted from editors like Notepad++.
 - **Hardware Support:** Built-in commands for the onboard LED and a physical "Wait" button on GPIO 2.
+- **Configurable Key Input Delay:** Key input delay can be varied from no delay to 15ms in 5ms increments.
 - **About Box:** Shows the version, credits, and a one-click link back to this repository.
 
 ## 🛠️ Installation & Requirements
+
+See this PDF for complete build from source instructions...
+
+[https://github.com/myoung8223/dks/blob/main/Digispark Keyboard Scripter Basic IDE.pdf](https://github.com/myoung8223/dks/blob/main/Digispark%20Keyboard%20Scripter%20Basic%20IDE.pdf)
+
+At this time there is no binary version available and the project must be built from source.  Though the instructions for doing so are comprehensive.  No deep programming background is needed to build from source.
 
 1. **Hardware:** A Digispark (ATtiny85) development board.
 2. **Drivers:** The Micronucleus / libusb driver so Windows can talk to the board (installable via Zadig).
 3. **arduino-cli:** Must be available on your PATH or in the project directory.
 4. **Board core:** The IDE drives `arduino-cli` through a local `arduino-cli.yaml` and the Digistump AVR core. Because the original Digistump board index is no longer maintained, the actively maintained **ArminJo DigistumpArduino** fork is recommended.
-
-Create an `arduino-cli.yaml` in the project folder (this keeps everything portable inside that folder rather than your user profile):
-
-```yaml
-directories:
-  data: ./portable_data
-  downloads: ./portable_data/staging
-  user: ./portable_data/user
-board_manager:
-  additional_urls:
-    - https://raw.githubusercontent.com/ArminJo/DigistumpArduino/master/package_digistump_index.json
-```
-
-Then initialize the toolchain from that folder:
-
-```bash
-arduino-cli core update-index --config-file arduino-cli.yaml
-arduino-cli core install digistump:avr --config-file arduino-cli.yaml
-```
-
-Run the IDE from this same folder, since it invokes `arduino-cli` with the local `arduino-cli.yaml`.
 
 ## 📝 Scripting Specifications
 
