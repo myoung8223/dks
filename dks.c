@@ -72,6 +72,9 @@ HINSTANCE WINAPI ShellExecuteA(HWND, LPCSTR, LPCSTR, LPCSTR, LPCSTR, INT);
 #endif
 int WINAPI WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCSTR, LPBOOL);
 
+// CheckMenuRadioItem may be absent from minimal TCC winapi headers
+BOOL WINAPI CheckMenuRadioItem(HMENU, UINT, UINT, UINT, UINT);
+
 // ============================================================================
 // --- APPLICATION CONSTANTS & GLOBALS ---
 // ============================================================================
@@ -86,15 +89,29 @@ int WINAPI WideCharToMultiByte(UINT, DWORD, LPCWSTR, int, LPSTR, int, LPCSTR, LP
 #define IDM_SAVE_AS 1007
 #define IDM_ABOUT 1008
 
+// Typing-delay preset menu IDs (safePrint inter-key delay)
+#define IDM_DELAY_0  1010
+#define IDM_DELAY_1  1011
+#define IDM_DELAY_5  1012
+#define IDM_DELAY_10 1013
+#define IDM_DELAY_15 1014
+
 // About-dialog control IDs
 #define IDC_ABOUT_VISIT 2001
 #define IDC_ABOUT_CLOSE 2002
 
 // Application version string (shown in the About box; bump this on each release)
-#define APP_VERSION "19"
+#define APP_VERSION "21"
 
 // GitHub repository URL (shown in the About box and opened by the browser prompt)
 #define GITHUB_URL "https://github.com/myoung8223/dks"
+
+// Practical flash ceiling (bytes). The Micronucleus bootloader actually on the
+// device can leave LESS usable flash than arduino-cli / the core reports as its
+// "Maximum", so a sketch that "fits" per the compiler can still fail to upload
+// or run. Sketches larger than this are blocked before upload. Adjust to match
+// the bootloader on your hardware.
+#define SAFE_FLASH_MAX 6012
 
 // USB HID Modifier Bitmasks (Used by DigiKeyboard)
 #define MOD_CONTROL_LEFT  (1 << 0)
@@ -108,9 +125,11 @@ char currentFile[MAX_PATH] = "";    // Tracks the currently opened file path
 char iniPath[MAX_PATH] = "";        // Tracks the path to the settings.ini file
 HBRUSH hEditBkBrush = NULL;         // Brush for Dark Mode background
 WNDPROC oldEditProc = NULL;         // Subclass window procedure pointer for the editor
+HMENU gDelayMenu = NULL;            // Handle to the "Typing Delay" submenu (for radio checks)
 
 int isDarkMode = 0;                 // Dark mode toggle state
 int isWordWrap = 1;                 // Word wrap toggle state
+int safePrintDelay = 15;            // Inter-key delay (ms) injected into safePrint; 0 = none
 
 // ============================================================================
 // --- CONFIGURATION HELPERS ---
@@ -129,6 +148,7 @@ void InitIniPath() {
 void LoadSettings() {
     isDarkMode = GetPrivateProfileInt("Settings", "DarkMode", 0, iniPath);
     isWordWrap = GetPrivateProfileInt("Settings", "WordWrap", 1, iniPath);
+    safePrintDelay = GetPrivateProfileInt("Settings", "SafePrintDelay", 15, iniPath);
 }
 
 // Writes settings to the INI file
@@ -138,6 +158,8 @@ void SaveSettings() {
     WritePrivateProfileString("Settings", "DarkMode", buffer, iniPath);
     sprintf(buffer, "%d", isWordWrap);
     WritePrivateProfileString("Settings", "WordWrap", buffer, iniPath);
+    sprintf(buffer, "%d", safePrintDelay);
+    WritePrivateProfileString("Settings", "SafePrintDelay", buffer, iniPath);
 }
 
 // ============================================================================
@@ -213,7 +235,8 @@ int transpile(const char* inputFilename) {
     fprintf(out, "    unsigned char c = pgm_read_byte(p++);\n");
     fprintf(out, "    if (c == 0) break;\n");
     fprintf(out, "    DigiKeyboard.print((char)c);\n");
-    fprintf(out, "    DigiKeyboard.delay(15);\n");
+    if (safePrintDelay > 0)
+        fprintf(out, "    DigiKeyboard.delay(%d);\n", safePrintDelay);
     fprintf(out, "  }\n");
     fprintf(out, "}\n\n");
 
@@ -752,6 +775,18 @@ void ShowAboutDialog(HWND hParent) {
         x, y, w, h, hParent, NULL, GetModuleHandle(NULL), NULL);
 }
 
+// Maps a safePrint delay value to its Typing-Delay menu command ID (-1 if none).
+int DelayToMenuId(int d) {
+    switch (d) {
+        case 0:  return IDM_DELAY_0;
+        case 1:  return IDM_DELAY_1;
+        case 5:  return IDM_DELAY_5;
+        case 10: return IDM_DELAY_10;
+        case 15: return IDM_DELAY_15;
+        default: return -1;
+    }
+}
+
 // ============================================================================
 // --- WINDOWS GUI EVENT LOOP ---
 // ============================================================================
@@ -775,6 +810,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
             AppendMenu(hOptionsMenu, MF_STRING | (isDarkMode ? MF_CHECKED : 0), IDM_TOGGLE_DARK, "Dark Mode");
             AppendMenu(hOptionsMenu, MF_STRING | (isWordWrap ? MF_CHECKED : 0), IDM_TOGGLE_WRAP, "Word Wrap");
+
+            // Typing Delay submenu (safePrint inter-key delay presets)
+            gDelayMenu = CreatePopupMenu();
+            AppendMenu(gDelayMenu, MF_STRING, IDM_DELAY_0,  "No Delay");
+            AppendMenu(gDelayMenu, MF_STRING, IDM_DELAY_1,  "1 ms");
+            AppendMenu(gDelayMenu, MF_STRING, IDM_DELAY_5,  "5 ms");
+            AppendMenu(gDelayMenu, MF_STRING, IDM_DELAY_10, "10 ms");
+            AppendMenu(gDelayMenu, MF_STRING, IDM_DELAY_15, "15 ms");
+            AppendMenu(hOptionsMenu, MF_POPUP, (UINT_PTR)gDelayMenu, "Typing Delay");
+            {
+                int sel = DelayToMenuId(safePrintDelay);
+                if (sel != -1)
+                    CheckMenuRadioItem(gDelayMenu, IDM_DELAY_0, IDM_DELAY_15, (UINT)sel, MF_BYCOMMAND);
+            }
+
             AppendMenu(hOptionsMenu, MF_SEPARATOR, 0, NULL);
             AppendMenu(hOptionsMenu, MF_STRING, IDM_ABOUT, "About...");
             AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hOptionsMenu, "Options");
@@ -891,6 +941,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     ShowAboutDialog(hwnd);
                     break;
 
+                case IDM_DELAY_0:
+                case IDM_DELAY_1:
+                case IDM_DELAY_5:
+                case IDM_DELAY_10:
+                case IDM_DELAY_15: {
+                    UINT id = LOWORD(wParam);
+                    switch (id) {
+                        case IDM_DELAY_0:  safePrintDelay = 0;  break;
+                        case IDM_DELAY_1:  safePrintDelay = 1;  break;
+                        case IDM_DELAY_5:  safePrintDelay = 5;  break;
+                        case IDM_DELAY_10: safePrintDelay = 10; break;
+                        case IDM_DELAY_15: safePrintDelay = 15; break;
+                    }
+                    CheckMenuRadioItem(gDelayMenu, IDM_DELAY_0, IDM_DELAY_15, id, MF_BYCOMMAND);
+                    break;
+                }
+
                 case IDM_FLASH: {
                     SaveFile(hwnd, "temp_payload.txt");
                     
@@ -923,6 +990,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                         char sketchLine[256] = "", ramLine[256] = "";
                         extract_line(buildOut, "Sketch uses", sketchLine, sizeof(sketchLine));
                         extract_line(buildOut, "Global variables", ramLine, sizeof(ramLine));
+
+                        // Enforce the practical flash ceiling BEFORE uploading.
+                        // arduino-cli may report a higher "Maximum" than the
+                        // bootloader actually leaves usable, so a sketch that
+                        // "fits" per the compiler can still fail on hardware.
+                        int usedBytes = 0;
+                        if (sscanf(sketchLine, "Sketch uses %d", &usedBytes) == 1
+                                && usedBytes > SAFE_FLASH_MAX) {
+                            char warn[640];
+                            snprintf(warn, sizeof(warn),
+                                "Sketch is %d bytes, over the reliable limit of %d bytes for this "
+                                "Digispark's bootloader.\n\n%s\n\n"
+                                "The compiler reports it fits, but payloads above %d bytes often "
+                                "fail to upload or run correctly, so the upload was cancelled.\n\n"
+                                "Please shorten the script (or move long payloads to a downloaded stage).",
+                                usedBytes, SAFE_FLASH_MAX, sketchLine, SAFE_FLASH_MAX);
+                            MessageBox(hwnd, warn, "Sketch Too Large (Safety Limit)", MB_OK | MB_ICONERROR);
+                            break;
+                        }
 
                         char okMsg[1024];
                         snprintf(okMsg, sizeof(okMsg),
