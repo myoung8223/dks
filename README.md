@@ -16,9 +16,9 @@ A lightweight, dark-mode Win32 IDE and transpiler for the Digispark (ATtiny85). 
 
 ## 🛠️ Installation & Requirements
 
-Windows Binary Release Version
+Windows Binary Release Version:
 
-[https://www.mikesshorts.com/misc/dks/dks.exe](https://www.mikesshorts.com/misc/dks/dks.exe)
+- [https://www.mikesshorts.com/misc/dks/dks.exe](https://www.mikesshorts.com/misc/dks/dks.exe)
 
 See this PDF for complete build from source instructions...
 
