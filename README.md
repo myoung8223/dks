@@ -1,3 +1,5 @@
+<img src="https://github.com/myoung8223/dks/blob/main/logo.png">
+
 # Digispark Keyboard Scripter IDE
 
 A lightweight, dark-mode Win32 IDE and transpiler for the Digispark (ATtiny85). Write automation scripts in a simplified language, keep an eye on the flash/RAM budget as you build, and flash payloads straight to the hardware — all from a single small native executable.
