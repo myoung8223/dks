@@ -46,6 +46,7 @@ typedef struct {
 #define OFN_PATHMUSTEXIST    0x00000800
 #define OFN_FILEMUSTEXIST    0x00001000
 #define OFN_EXPLORER         0x00080000
+#define OFN_NOCHANGEDIR      0x00000008
 
 // SS_NOPREFIX makes STATIC controls render '&' literally instead of
 // treating it as a keyboard-mnemonic prefix. Guarded in case TCC omits it.
@@ -101,7 +102,7 @@ BOOL WINAPI CheckMenuRadioItem(HMENU, UINT, UINT, UINT, UINT);
 #define IDC_ABOUT_CLOSE 2002
 
 // Application version string (shown in the About box; bump this on each release)
-#define APP_VERSION "21"
+#define APP_VERSION "26"
 
 // GitHub repository URL (shown in the About box and opened by the browser prompt)
 #define GITHUB_URL "https://github.com/myoung8223/dks"
@@ -141,6 +142,22 @@ void InitIniPath() {
     char *lastSlash = strrchr(iniPath, '\\');
     if (lastSlash) {
         strcpy(lastSlash + 1, "settings.ini");
+    }
+}
+
+// Forces the process working directory to the folder containing the EXE, so
+// every relative path the IDE relies on -- arduino-cli.yaml, ./portable_data,
+// sketch\, temp_payload.txt -- resolves against the EXE's own folder instead of
+// whatever directory the IDE happened to be launched from. Without this, running
+// the app from a shortcut or a different folder makes arduino-cli miss the yaml
+// and fall back to its default (empty) config -> "platform not found" errors.
+void SetWorkingDirToExe() {
+    char path[MAX_PATH];
+    GetModuleFileName(NULL, path, MAX_PATH);
+    char *lastSlash = strrchr(path, '\\');
+    if (lastSlash) {
+        *lastSlash = '\0';
+        SetCurrentDirectory(path);
     }
 }
 
@@ -885,7 +902,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     ofn.lpstrFilter = "Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
                     ofn.lpstrFile = currentFile;
                     ofn.nMaxFile = MAX_PATH;
-                    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST;
+                    ofn.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
 
                     if (GetOpenFileName(&ofn)) {
                         LoadFile(hwnd, currentFile);
@@ -913,7 +930,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     ofn.lpstrFilter = "Text Files (*.txt)\0*.txt\0All Files (*.*)\0*.*\0";
                     ofn.lpstrFile = currentFile;
                     ofn.nMaxFile = MAX_PATH;
-                    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT;
+                    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
                     ofn.lpstrDefExt = "txt";
 
                     if (GetSaveFileName(&ofn)) {
@@ -959,6 +976,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
 
                 case IDM_FLASH: {
+                    // Re-anchor CWD to the EXE folder right before invoking arduino-cli,
+                    // so the build/upload always resolves arduino-cli.yaml and
+                    // ./portable_data correctly even if the working directory drifted.
+                    SetWorkingDirToExe();
                     SaveFile(hwnd, "temp_payload.txt");
                     
                     if (transpile("temp_payload.txt")) {
@@ -1051,6 +1072,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 // --- APPLICATION ENTRY POINT ---
 // ============================================================================
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    SetWorkingDirToExe(); // Anchor all relative paths to the EXE folder (portable setup)
     InitIniPath();
     LoadSettings();
 
@@ -1060,6 +1082,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.lpszClassName = "DigiIDEClass";
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+
+    wc.hIcon = LoadIcon(hInstance, "MAINICON");
 
     RegisterClass(&wc);
 
