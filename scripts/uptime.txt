@@ -1,0 +1,19 @@
+defaultdelay 250   # 250ms delay between commands
+waitblink(1)       # loop blinking LED w/2 second delay until user presses button
+keys(gui, r)    # [Windows] + [R]
+string("cmd")   # type "notepad"
+key(enter)      # press [Enter]
+delay(500)      # wait a half second for the command prompt window to appear
+
+# run back-to-back string commands to type a long PowerShell command to determine system uptime and announce it with the speech synthesizer
+string("powershell -Command $u=(Get-Date)-(Get-CimInstance Win32_OperatingSystem).LastBootUpTime; $m='System has been running for '+$u.Days+' days, '+$u.Hours+' hours, and '+$u.Minutes+' minutes.'; Add-Type -AssemblyName System.Speech; (New-Object Syste")
+string("m.Speech.Synthesis.SpeechSynthesizer).Speak($m)")
+
+key(enter)                                        # press [Enter] to run the PowerShell command
+string("Press button to close command prompt.")   # type message to user to press the button to close the command prompt
+waitblink(2)                                      # loop blinking LED twice w/2 second delay until user presses button
+delay(1000)    # wait 1 second
+key(esc)         # press [Esc] to remove last typed text in command prompt
+string("exit")   # type "exit"
+key(enter)       # press [Enter]
+led(on)      # turn LED on indicating done

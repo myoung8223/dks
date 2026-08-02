@@ -1,9 +1,10 @@
-defaultdelay 250   # set global default delay after each keyboard action to 250ms
-waitblink(3)       # loop blinking the red LED three times and wait 2 seconds, proceeding when the user presses the GPIO 2 wired button
-keys(gui, r)        # press [Windows] + [R] to open a Run dialog
-string("notepad")   # type notepad
+defaultdelay 250   # 250ms delay between commands
+waitblink(1)       # loop blinking LED w/2 second delay until user presses button
+keys(gui, r)        # [Windows] + [R]
+string("notepad")   # type "notepad"
 key(enter)          # press [Enter]
+delay(500)                # wait a half second for Notepad to launch
+keys(control, shift, n)   # press [Ctrl] + [Shift] + [N] to open a new window
 delay(1000)                                          # wait 1 second
-string("This payload was deployed via Digispark!")   # type message into Notepad
-key(enter)                                           # press [Enter]
-led(on)      # turn the red LED on to indicate the script is done running
+string("This payload was deployed via Digispark!")   # type message
+led(on)                                              # turn LED on indicating done

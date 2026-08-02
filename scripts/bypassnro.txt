@@ -1,0 +1,17 @@
+defaultdelay 250   # 250ms delay between commands
+delay(1000)        # wait 1 second
+keys(shift, f10)   # press [Shift] + [F10] to open command prompt
+delay(1000)        # wait 1 second for command prompt to appear
+keydown(alt)   # press and hold [Alt]
+key(tab)       # press and release [Tab]
+key(tab)   # press and release [Tab] again
+keyup()    # release all keys
+
+# display message to user to press button to proceed with OOBE\BYPASSNRO operation
+string("echo off & cls & echo Press button to perform OOBE\BYPASSNRO")
+
+key(enter)     # press [Enter]
+waitblink(1)               # loop blinking LED w/2 second delay until user presses button
+string("OOBE\BYPASSNRO")   # type "OOBE\BYPASSNRO"
+key(enter)                 # press [Enter]
+led(on)      # turn LED on indicating done
